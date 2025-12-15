@@ -1,243 +1,171 @@
-const ADMIN_PIN = "bassam1234";
+// engine/core.js
+import { loadCatalog } from "./catalog.js";
+import { buildSynonymIndexFromPrices, findCanonicalProduct, normalizeArabic } from "./synonyms.js";
 
-/** ---------- تخزين محلي ---------- */
-function saveLocal(key, data) {
-  localStorage.setItem(key, JSON.stringify(data));
-}
-function loadLocal(key) {
-  const v = localStorage.getItem(key);
-  return v ? JSON.parse(v) : null;
-}
+function extractUSDValue(text) {
+  const t = String(text || "");
+  // 300 دولار / 300$ / USD 300 / 300 usd
+  const m1 = t.match(/(\d+(?:\.\d+)?)\s*(?:usd|دولار|\$)\b/i);
+  if (m1) return Number(m1[1]);
 
-/** ---------- أدوات ---------- */
-function normalize(s = "") {
-  return (s || "")
-    .toString()
-    .toLowerCase()
-    .replace(/[إأآ]/g, "ا")
-    .replace(/ة/g, "ه")
-    .replace(/ى/g, "ي")
-    .replace(/\s+/g, " ")
-    .trim();
+  const m2 = t.match(/\b(?:usd)\s*(\d+(?:\.\d+)?)/i);
+  if (m2) return Number(m2[1]);
+
+  // محاولة: آخر رقم كبير
+  const m3 = t.match(/(\d{2,}(?:\.\d+)?)/);
+  if (m3) return Number(m3[1]);
+
+  return null;
 }
 
-function extractPercentFromNotes(notes = "") {
-  // يلتقط 5% أو 10% أو 20% أو "الفئة5%"
-  const m = (notes || "").match(/(\d+(\.\d+)?)\s*%/);
-  if (m) return Number(m[1]) / 100;
-
-  const m2 = (notes || "").match(/الفئه\s*(\d+(\.\d+)?)/i) || (notes || "").match(/الفئة\s*(\d+(\.\d+)?)/i);
-  if (m2) return Number(m2[1]) / 100;
-
-  return 0;
+function extractPercentFromNotes(notes) {
+  const s = String(notes || "");
+  // مثل: الفئة5% أو 10%
+  const m = s.match(/(\d+(?:\.\d+)?)\s*%/);
+  if (!m) return null;
+  return Number(m[1]);
 }
 
-function extractHSFromNotes(notes = "") {
-  const m = (notes || "").match(/\b\d{8}\b/);
-  return m ? m[0] : "";
+function findPriceItemByName(prices, canonicalName) {
+  if (!canonicalName) return null;
+  return (prices || []).find(it => (it?.name || it?.title || it?.label) === canonicalName) || null;
 }
 
-function detectCurrency(text) {
-  const t = normalize(text);
-  if (t.includes("$") || t.includes("usd") || t.includes("دولار")) return "USD";
-  if (t.includes("sar") || t.includes("ريال")) return "SAR";
-  if (t.includes("aed") || t.includes("درهم")) return "AED";
-  return "USD";
+function findHSByQuery(hsList, canonicalName) {
+  // hs_catalog.json قد يكون بأشكال مختلفة، فنبحث بشكل مرن بالاسم
+  const nameN = normalizeArabic(canonicalName || "");
+  if (!nameN) return null;
+
+  for (const row of (hsList || [])) {
+    const n = normalizeArabic(row?.name || row?.title || row?.label || "");
+    const code = row?.hs || row?.code || row?.hs_code || row?.tariff || row?.id;
+    if (!code) continue;
+    if (n && (n === nameN || n.includes(nameN) || nameN.includes(n))) return String(code);
+  }
+  return null;
 }
 
-function extractValueMoney(text) {
-  // إذا كتب قيمة بالدولار مباشرة: 300 دولار
-  const t = normalize(text);
-  const m = t.match(/(\d+(\.\d+)?)/);
-  return m ? Number(m[1]) : null;
+function wantsHS(q) {
+  q = normalizeArabic(q);
+  return q.includes("بند") || q.includes("hs");
+}
+function wantsDuty(q) {
+  q = normalizeArabic(q);
+  return q.includes("جمارك") || q.includes("رسوم") || q.includes("كم رسوم") || q.includes("كم جمارك");
+}
+function wantsPrice(q) {
+  q = normalizeArabic(q);
+  return q.includes("قيمه") || q.includes("سعر") || q.includes("كم قيمه") || q.includes("كم سعر");
 }
 
-/** ---------- فهم الوحدة والكمية ---------- */
-const UNIT_ALIASES = [
-  { unit: "ton", aliases: ["طن", "ton", "tonne"] },
-  { unit: "kg", aliases: ["كيلو", "kg", "كجم", "كيلوجرام"] },
-  { unit: "dz", aliases: ["درزن", "dz"] },
-  { unit: "pcs", aliases: ["حبه", "حبة", "قطعه", "قطعة", "pcs", "قطعه", "نفر"] },
-  { unit: "W", aliases: ["w", "واط"] },
-  { unit: "Ah", aliases: ["ah", "امبير", "أمبير", "امبير/ساعه", "أمبير/ساعة"] },
-  { unit: "kW", aliases: ["kw", "كيلو وات", "كيلوواط"] },
-  { unit: "kVA", aliases: ["kva"] },
-  { unit: "ltr", aliases: ["لتر", "ltr"] },
-  { unit: "yd", aliases: ["يارد", "yd"] },
-  { unit: "roll", aliases: ["رول", "roll"] },
-  { unit: "m2", aliases: ["م2", "m2", "متر مربع"] },
-];
+export async function answer(userText) {
+  const { prices, hs } = await loadCatalog();
+  const synIndex = buildSynonymIndexFromPrices(prices);
 
-function detectQtyAndUnit(text) {
-  const t = normalize(text);
-
-  // يلتقط: "5 طن" أو "5kg" أو "5 درزن"
-  const num = t.match(/(\d+(\.\d+)?)/);
-  if (!num) return { qty: null, unit: null };
-
-  let foundUnit = null;
-  for (const u of UNIT_ALIASES) {
-    for (const a of u.aliases) {
-      if (t.includes(normalize(a))) {
-        foundUnit = u.unit;
-        break;
-      }
-    }
-    if (foundUnit) break;
+  const canonical = findCanonicalProduct(userText, synIndex);
+  if (!canonical) {
+    return {
+      ok: true,
+      type: "not_found",
+      text: "لم أتعرف على الصنف. افتح ⚙️ الإدارة واستورد قائمة الأسعار أو اكتب اسم أو بند أقرب."
+    };
   }
 
-  return { qty: Number(num[1]), unit: foundUnit };
-}
+  const priceItem = findPriceItemByName(prices, canonical);
+  const hsCode = findHSByQuery(hs, canonical);
 
-/** ---------- قاعدة البيانات (من الاستيراد) ---------- */
-// نحفظ الكتالوج هنا: catalog.items = [{name, price, unit, rate, hs, keywords[]}]
-function getCatalog() {
-  return loadLocal("catalog") || { items: [] };
-}
-function setCatalog(catalog) {
-  saveLocal("catalog", catalog);
-}
-
-function buildKeywordsFromName(name = "") {
-  // يبني كلمات مفتاحية بسيطة من الاسم
-  const n = normalize(name)
-    .replace(/[()–—\-]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const parts = n.split(" ").filter(Boolean);
-  // نضيف الاسم كامل + أجزاءه
-  const keys = new Set([n, ...parts]);
-  return Array.from(keys);
-}
-
-function findItem(query, catalog) {
-  const q = normalize(query);
-
-  // 1) تطابق مباشر بالاسم
-  let best = null;
-  for (const it of catalog.items) {
-    const keys = (it.keywords && it.keywords.length ? it.keywords : buildKeywordsFromName(it.name)).map(normalize);
-    if (keys.some(k => k && q.includes(k))) {
-      best = it;
-      break;
-    }
+  // لو السؤال عن البند فقط
+  if (wantsHS(userText) && !wantsDuty(userText) && !wantsPrice(userText)) {
+    return {
+      ok: true,
+      type: "hs",
+      canonical,
+      hs: hsCode || "غير متوفر",
+      text: `الصنف: ${canonical}\nالبند: ${hsCode || "غير متوفر"}`
+    };
   }
 
-  // 2) إذا ما حصل، نجرب “اسم بدون إضافات”
-  if (!best) {
-    for (const it of catalog.items) {
-      if (q.includes(normalize(it.name))) {
-        best = it;
-        break;
-      }
-    }
-  }
-
-  return best;
-}
-
-/** ---------- الحساب ---------- */
-function calcFee(value, rate) {
-  return value * (Number(rate) || 0);
-}
-
-/** ---------- واجهات التطبيق ---------- */
-export async function answer(question) {
-  const catalog = getCatalog();
-
-  const item = findItem(question, catalog);
-  const currency = detectCurrency(question);
-
-  if (!item) {
-    return { text: "لم أتعرف على الصنف. افتح ⚙️ الإدارة واستورد قائمة الأسعار أو أضف الصنف." };
-  }
-
-  // القيمة المكتوبة في السؤال (إن وجدت)
-  const valueFromUser = extractValueMoney(question);
-
-  // الكمية والوحدة (إن وجدت)
-  const { qty, unit } = detectQtyAndUnit(question);
-
-  let usedValue = null;
-  let valueExplain = "";
-
-  // 1) إذا كتب المستخدم قيمة -> نستخدمها
-  if (valueFromUser != null && (normalize(question).includes("دولار") || normalize(question).includes("$") || normalize(question).includes("usd"))) {
-    usedValue = valueFromUser;
-    valueExplain = "استخدمت القيمة التي كتبتها أنت.";
-  } else {
-    // 2) إذا كتب كمية ووحدة/أو حتى كمية فقط -> نحسب من السعر الافتراضي
-    if (qty != null) {
-      // إذا الوحدة غير موجودة في السؤال، نستخدم وحدة الصنف المخزنة
-      const u = unit || item.unit || null;
-      usedValue = qty * Number(item.price || 0);
-      valueExplain = `حسبت القيمة تلقائياً: الكمية (${qty} ${u || ""}) × السعر (${item.price} لكل ${item.unit || u || "وحدة"})`;
-    } else {
-      // 3) لا قيمة ولا كمية: نستخدم “سعر افتراضي للوحدة 1”
-      usedValue = Number(item.price || 0);
-      valueExplain = `لم تذكر قيمة/كمية، استخدمت سعر الصنف الافتراضي للوحدة: ${item.price} لكل ${item.unit || "وحدة"}.`;
-    }
-  }
-
-  const rate = Number(item.rate || 0);
-  const fee = calcFee(usedValue, rate);
-
-  return {
-    text:
-`الصنف: ${item.name}
-البند: ${item.hs || "غير محدد"}
-الوحدة: ${item.unit || "—"}
-السعر الافتراضي: ${item.price} لكل ${item.unit || "وحدة"}
-الفئة/النسبة: ${(rate * 100).toFixed(2)}%
-
-القيمة المعتمدة: ${usedValue} ${currency}
-الرسوم الجمركية: ${fee.toFixed(2)} ${currency}
-
-${valueExplain}`
-  };
-}
-
-/** ---------- الإدارة ---------- */
-export function adminLogin(pin) {
-  return pin === ADMIN_PIN;
-}
-
-export function importPriceList(rawText) {
-  // rawText = JSON array كما أرسلته
-  let arr;
-  try {
-    arr = JSON.parse(rawText);
-  } catch (e) {
-    throw new Error("JSON غير صالح. تأكد أنك لصقت القائمة كاملة بين [ ]");
-  }
-
-  if (!Array.isArray(arr)) throw new Error("يجب أن يكون الاستيراد عبارة عن Array.");
-
-  const catalog = { items: [] };
-
-  for (const row of arr) {
-    const name = row.name || "";
-    const price = Number(row.price || 0);
-    const unit = row.unit || "";
-    const notes = row.notes || "";
-
-    const rate = extractPercentFromNotes(notes);
-    const hs = extractHSFromNotes(notes);
-
-    catalog.items.push({
-      name,
-      price,
+  // لو السؤال عن القيمة/السعر
+  if (wantsPrice(userText) && !wantsDuty(userText)) {
+    const p = priceItem?.price;
+    const unit = priceItem?.unit || "";
+    const notes = priceItem?.notes || "";
+    return {
+      ok: true,
+      type: "price",
+      canonical,
+      hs: hsCode || "",
+      price: (p ?? null),
       unit,
-      rate,
-      hs,
-      keywords: buildKeywordsFromName(name)
-    });
+      notes,
+      text: `الصنف: ${canonical}\nالبند: ${hsCode || "غير متوفر"}\nالقيمة: ${p ?? "غير متوفر"} ${unit}\nملاحظات: ${notes || "-"}`
+    };
   }
 
-  setCatalog(catalog);
-  return { count: catalog.items.length };
-}
+  // لو السؤال عن الرسوم/الجمارك
+  if (wantsDuty(userText)) {
+    const percent = extractPercentFromNotes(priceItem?.notes || "");
+    const usd = extractUSDValue(userText);
 
-export function clearCatalog() {
-  localStorage.removeItem("catalog");
+    if (!percent && usd == null) {
+      return {
+        ok: true,
+        type: "need_value_and_rate",
+        canonical,
+        hs: hsCode || "",
+        text: `وجدت الصنف: ${canonical}\nالبند: ${hsCode || "غير متوفر"}\nأرسل القيمة بالدولار (مثال: "${canonical} 300 دولار")`
+      };
+    }
+
+    if (usd == null) {
+      return {
+        ok: true,
+        type: "need_value",
+        canonical,
+        hs: hsCode || "",
+        text: `الصنف: ${canonical}\nالبند: ${hsCode || "غير متوفر"}\nأحتاج قيمة البضاعة بالدولار للحساب.\nمثال: "${canonical} 300 دولار"`
+      };
+    }
+
+    if (!percent) {
+      return {
+        ok: true,
+        type: "need_rate",
+        canonical,
+        hs: hsCode || "",
+        value_usd: usd,
+        text: `الصنف: ${canonical}\nالقيمة: USD ${usd}\nلا أجد نسبة الفئة في الملاحظات لهذا الصنف داخل الأسعار.\nضعها داخل ملاحظات الصنف مثل: "الفئة5%" أو "10%".`
+      };
+    }
+
+    const duty = (usd * (percent / 100));
+    return {
+      ok: true,
+      type: "duty",
+      canonical,
+      hs: hsCode || "",
+      value_usd: usd,
+      percent,
+      duty_usd: duty,
+      text:
+        `الصنف: ${canonical}\n` +
+        `البند: ${hsCode || "غير متوفر"}\n` +
+        `القيمة: USD ${usd}\n` +
+        `النسبة: ${percent}%\n` +
+        `الرسوم الجمركية: USD ${duty}\n` +
+        `الرسوم = القيمة × النسبة`
+    };
+  }
+
+  // رد عام (يعرض كل شيء)
+  return {
+    ok: true,
+    type: "info",
+    canonical,
+    hs: hsCode || "",
+    text:
+      `الصنف: ${canonical}\n` +
+      `البند: ${hsCode || "غير متوفر"}\n` +
+      `ملاحظات: ${(priceItem?.notes || "-")}`
+  };
 }
