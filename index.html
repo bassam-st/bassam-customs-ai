@@ -1,107 +1,27 @@
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>مساعد بسام الجمركي</title>
-<style>
-  body{font-family:system-ui;background:#f4f6f8;padding:16px;margin:0}
-  .card{background:#fff;padding:16px;border-radius:16px;max-width:760px;margin:auto;box-shadow:0 4px 14px rgba(0,0,0,.08)}
-  textarea,input{width:100%;padding:10px;margin:6px 0;font-size:16px;border:1px solid #d0d7de;border-radius:12px}
-  button{padding:12px 14px;border:0;border-radius:12px;font-size:16px;cursor:pointer}
-  .green{background:#16a34a;color:#fff;width:100%}
-  .dark{background:#0f172a;color:#e5e7eb;padding:12px;border-radius:12px;white-space:pre-wrap}
-  .row{display:flex;gap:10px;flex-wrap:wrap}
-  .row button{flex:1}
-  .admin{margin-top:16px;border-top:1px dashed #cbd5e1;padding-top:12px}
-  .hidden{display:none}
-  .hint{color:#475569;font-size:14px}
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>مساعد بسام الجمركي</title>
+  <style>
+    body{font-family:system-ui; background:#f3f4f6; margin:0; padding:20px;}
+    .card{max-width:520px; margin:0 auto; background:#fff; border-radius:16px; padding:18px; box-shadow:0 6px 20px rgba(0,0,0,.08)}
+    h1{margin:0 0 12px; text-align:center}
+    textarea{width:100%; min-height:90px; border-radius:12px; border:1px solid #ddd; padding:12px; font-size:16px}
+    button{width:100%; margin-top:12px; padding:14px; border:0; border-radius:14px; background:#16a34a; color:#fff; font-size:18px}
+    pre{white-space:pre-wrap; background:#0f172a; color:#e2e8f0; padding:14px; border-radius:14px; margin-top:12px}
+  </style>
 </head>
 <body>
-
-<div class="card">
-  <h2>🛃 مساعد بسام الجمركي</h2>
-
-  <textarea id="q" placeholder="مثال: صحون نت 5 حبة
-مثال: قطع غيار سيارات مستخدم 2000 كيلو
-مثال: دراجة أطفال 30 حبة"></textarea>
-
-  <button class="green" id="ask">احسب / اسأل</button>
-  <pre id="out" class="dark">جاهز…</pre>
-
-  <div class="admin">
-    <div class="row">
-      <button id="toggleAdmin">⚙️ إدارة</button>
-      <button id="clearBtn">مسح البيانات المحلية</button>
-    </div>
-
-    <div id="adminBox" class="hidden">
-      <input id="pin" placeholder="PIN الإدارة">
-      <button id="loginBtn">دخول</button>
-
-      <div id="panel" class="hidden">
-        <h3>📥 استيراد قائمة الأسعار (JSON)</h3>
-        <div class="hint">الصق نفس القائمة التي أرسلتها لي بين [ ] ثم اضغط “استيراد”.</div>
-        <textarea id="bulk" placeholder='الصق JSON هنا...'></textarea>
-        <button id="importBtn" class="green">استيراد</button>
-        <pre id="adminOut" class="dark">لوحة الإدارة جاهزة.</pre>
-      </div>
-    </div>
+  <div class="card">
+    <h1>مساعد بسام الجمركي</h1>
+    <textarea id="q" placeholder="اكتب: كم جمارك المودمات؟ أو ماهو بند الملابس؟ أو مودمات 300 دولار..."></textarea>
+    <button id="ask">احسب / اسأل</button>
+    <pre id="out">جاهز.</pre>
   </div>
-</div>
 
-<script type="module">
-  import { answer, adminLogin, importPriceList, clearCatalog } from "./engine/core.js";
-
-  const out = document.getElementById("out");
-  const q = document.getElementById("q");
-
-  document.getElementById("ask").onclick = async ()=>{
-    out.textContent = "جاري المعالجة...";
-    try{
-      const r = await answer(q.value);
-      out.textContent = r.text;
-    }catch(e){
-      out.textContent = "خطأ: " + e.message;
-    }
-  };
-
-  const adminBox = document.getElementById("adminBox");
-  const panel = document.getElementById("panel");
-  const adminOut = document.getElementById("adminOut");
-
-  document.getElementById("toggleAdmin").onclick = ()=> {
-    adminBox.classList.toggle("hidden");
-  };
-
-  document.getElementById("loginBtn").onclick = ()=> {
-    if(adminLogin(document.getElementById("pin").value)){
-      panel.classList.remove("hidden");
-      adminOut.textContent = "تم تسجيل الدخول ✅";
-    } else {
-      alert("PIN غير صحيح");
-    }
-  };
-
-  document.getElementById("importBtn").onclick = ()=> {
-    try{
-      const raw = document.getElementById("bulk").value;
-      const res = importPriceList(raw);
-      adminOut.textContent = `تم الاستيراد ✅\nعدد الأصناف: ${res.count}\nالآن جرّب اكتب اسم أي صنف + كمية + وحدة.`;
-    }catch(e){
-      adminOut.textContent = "خطأ: " + e.message;
-    }
-  };
-
-  document.getElementById("clearBtn").onclick = ()=> {
-    if(confirm("هل تريد مسح البيانات المحلية (الأسعار المستوردة)؟")){
-      clearCatalog();
-      out.textContent = "تم مسح البيانات المحلية.";
-      adminOut.textContent = "تم المسح.";
-    }
-  };
-</script>
-
+  <!-- مهم: type=module + مسار نسبي -->
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
